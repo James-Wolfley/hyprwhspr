@@ -183,7 +183,28 @@ PROVIDERS: Dict[str, Dict] = {
                 'realtime': {'default_mode': 'transcribe'},
             }
         }
-    }
+    },
+    'phonon': {
+        'name': 'Phonon (self-hosted)',
+        'endpoint': '',  # Deployment-specific; setup asks for the full URL.
+        'api_key_required': False,
+        'requires_endpoint': True,
+        'audio_sample_rate': 16000,
+        'supports_language': False,
+        'supports_prompt': False,
+        'max_upload_bytes': 32 * 1024 * 1024,
+        'api_key_prefix': None,
+        'api_key_description': 'Optional reverse-proxy bearer token',
+        'models': {
+            'phonon-2': {
+                'name': 'Phonon-2',
+                'description': 'Self-hosted English transcription with live previews',
+                'body': {'model': 'phonon-2', 'response_format': 'json'},
+                'backends': ('rest-api', 'realtime-ws'),
+                'realtime': {'default_mode': 'transcribe', 'continuous': False},
+            },
+        },
+    },
 }
 
 
@@ -272,6 +293,8 @@ def validate_api_key(provider_id: str, api_key: str) -> Tuple[bool, Optional[str
     if not provider:
         return False, f"Unknown provider: {provider_id}"
     
+    if not api_key and not provider.get('api_key_required', True):
+        return True, None
     if not api_key:
         return False, "API key is required"
 

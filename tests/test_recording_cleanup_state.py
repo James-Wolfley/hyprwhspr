@@ -31,6 +31,58 @@ class RecordingCleanupStateTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
         return app
 
+    def test_skipped_audio_discards_realtime_stream(self):
+        for audio in (None, [0.0]):
+            with self.subTest(audio=audio):
+                app = types.SimpleNamespace(
+                    _recording_lock=threading.Lock(), is_recording=True,
+                    _recording_finalizing=threading.Event(), _recording_session=None,
+                    config=mock.Mock(), audio_manager=mock.Mock(),
+                    audio_capture=types.SimpleNamespace(stop_recording=lambda: audio,
+                                                        lock=threading.Lock(), frames_since_start=1),
+                    whisper_manager=mock.Mock(), _is_zero_volume=lambda data: True,
+                )
+                app.config.get_setting.return_value = 'realtime-ws'
+                for name in ('_ptt_reset', '_autostop_stop_silence_monitor', '_clear_mic_osd_preview_text',
+                             '_set_visualizer_state', '_stop_audio_level_monitoring', '_write_recording_status',
+                             '_restore_recording_playback', '_wait_for_start_settled', '_save_debug_recording',
+                             '_notify_zero_volume', '_show_result_and_hide', '_notify_capture'):
+                    setattr(app, name, mock.Mock())
+                self.main.hyprwhsprApp._stop_recording(app)
+                app.whisper_manager.discard_realtime_audio.assert_called_once_with()
+
+    def test_busy_processing_does_not_cancel_owned_transcription(self):
+        app = types.SimpleNamespace(_recording_lock=threading.Lock(), is_processing=True,
+                                    whisper_manager=mock.Mock())
+        self.main.hyprwhsprApp._process_audio(app, [0.5])
+        app.whisper_manager.discard_realtime_audio.assert_not_called()
+
+    def test_mute_cancellation_discards_realtime_audio(self):
+        app = types.SimpleNamespace(_recording_lock=threading.Lock(), is_recording=True,
+                                    _recording_session=None, _recording_finalizing=threading.Event(),
+                                    _ptt_reset=mock.Mock(), _cleanup_recording_state=mock.Mock(),
+                                    _wait_for_start_settled=mock.Mock(), audio_capture=mock.Mock(),
+                                    audio_manager=mock.Mock(), whisper_manager=mock.Mock())
+        self.main.hyprwhsprApp._cancel_recording_muted(app)
+        app.whisper_manager.discard_realtime_audio.assert_called_once_with()
+        self.assertFalse(app._recording_finalizing.is_set())
+
+    def test_phonon_start_waits_for_owned_transcription(self):
+        from tests.test_phonon_provider import FakeConfig
+        for processing in (True, False):
+            app = types.SimpleNamespace(_recording_lock=threading.Lock(), is_recording=False,
+                _recording_starting=False, is_processing=processing, _model_initializing=False,
+                _backend_init_failed=False, _file_transcription_active=False, _model_operation_active=False,
+                _recording_finalizing=threading.Event(), whisper_manager=mock.Mock(_model_manually_unloaded=False),
+                config=FakeConfig(transcription_backend='realtime-ws', websocket_provider='phonon'),
+                _notify_user=mock.Mock(), _release_blocked_capture=mock.Mock())
+            if not processing:
+                app._recording_finalizing.set()
+            self.main.hyprwhsprApp._start_recording(app)
+            app.whisper_manager.realtime_client_missing.assert_not_called()
+            self.assertFalse(app.is_recording)
+            app._release_blocked_capture.assert_called_once_with()
+
     def test_blocked_hide_releases_capture_client_and_subscriber_slot(self):
         with tempfile.TemporaryDirectory() as tmp:
             status = Path(tmp) / 'recording_status'

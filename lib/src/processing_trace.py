@@ -71,6 +71,8 @@ def classify_vad_mode(config):
     realtime_mode = _setting(config, 'realtime_mode', 'transcribe')
     if provider == 'elevenlabs':
         return 'provider_managed'
+    if provider == 'phonon':
+        return 'manual_commit'
     if provider == 'google':
         return 'server_vad'
     if realtime_mode == 'converse' or uses_manual_commit(model):

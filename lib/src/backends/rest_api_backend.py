@@ -23,8 +23,12 @@ np = require_package('numpy')
 
 try:
     from ..credential_manager import get_credential
+    from ..provider_registry import get_provider
+    from ..audio_resampler import resample_audio
 except ImportError:
     from credential_manager import get_credential
+    from provider_registry import get_provider
+    from audio_resampler import resample_audio
 
 from .base import TranscriptionBackend
 
@@ -81,7 +85,7 @@ class RestApiBackend(TranscriptionBackend):
             api_key = get_credential(provider_id)
             if api_key:
                 log(f'[REST] API key configured (via credential manager, provider: {provider_id})')
-            else:
+            elif (get_provider(provider_id) or {}).get('api_key_required', True):
                 log(f'WARNING: [REST] Provider {provider_id} configured but API key not found in credential store')
         else:
             # Backward compatibility: check for old rest_api_key in config
@@ -131,7 +135,7 @@ class RestApiBackend(TranscriptionBackend):
             provider_id = self.config.get_setting('rest_api_provider')
             if provider_id:
                 api_key = get_credential(provider_id)
-                if not api_key:
+                if not api_key and (get_provider(provider_id) or {}).get('api_key_required', True):
                     log(f'WARNING: [REST] Provider {provider_id} configured but API key not found in credential store')
             else:
                 # Backward compatibility: check for old rest_api_key in config
@@ -187,8 +191,19 @@ class RestApiBackend(TranscriptionBackend):
 
             log(log_msg)
 
+            provider = get_provider(provider_id) or {}
+            language = language_override if language_override is not None else self.config.get_setting('language', None)
+            if provider_id == 'phonon' and language and language.lower() not in ('en', 'english'):
+                raise ValueError('Phonon supports English only')
+            target_rate = provider.get('audio_sample_rate')
+            if target_rate:
+                audio_data = resample_audio(audio_data, sample_rate, target_rate)
+                sample_rate = target_rate
+
             # Convert audio to WAV format
             wav_bytes = self._numpy_to_wav_bytes(audio_data, sample_rate)
+            if provider.get('max_upload_bytes') and len(wav_bytes) > provider['max_upload_bytes']:
+                raise ValueError('Audio exceeds provider upload size limit')
             audio_duration = len(audio_data) / sample_rate
             log(f'[REST] Audio: {audio_duration:.2f}s @ {sample_rate}Hz, {len(wav_bytes)} bytes')
 
@@ -205,12 +220,11 @@ class RestApiBackend(TranscriptionBackend):
             # Add language parameter if configured
             data = extra_body.copy()
             # Use language_override if provided, otherwise get from config
-            language = language_override if language_override is not None else self.config.get_setting('language', None)
-            if language and 'language' not in data:
+            if language and 'language' not in data and provider.get('supports_language', True):
                 data['language'] = language
 
             # Fill prompt from config - use language-specific prompt if available
-            if 'prompt' not in data:
+            if 'prompt' not in data and provider.get('supports_prompt', True):
                 whisper_prompt, _ = self.resolve_whisper_prompt(language)
                 if whisper_prompt:
                     data['prompt'] = whisper_prompt

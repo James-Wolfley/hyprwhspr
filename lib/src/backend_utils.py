@@ -1,6 +1,19 @@
 """Backend utilities and constants for hyprwhspr"""
 
 import re
+from urllib.parse import urlsplit
+
+
+def is_valid_websocket_url(url):
+    """Require a WebSocket scheme and host without contacting the endpoint."""
+    if (not isinstance(url, str) or not url.startswith(('ws://', 'wss://'))
+            or any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in url)):
+        return False
+    try:
+        parsed = urlsplit(url)
+        return parsed.scheme in ('ws', 'wss') and bool(parsed.hostname) and parsed.port != 0
+    except ValueError:
+        return False
 
 
 _HARDWARE_DEVICE_TYPES = ('INTEGRATED_GPU', 'DISCRETE_GPU', 'VIRTUAL_GPU')

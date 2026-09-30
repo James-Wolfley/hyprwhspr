@@ -1,7 +1,7 @@
 """
 Realtime WebSocket transcription backend.
 
-Streams audio to a provider WebSocket (OpenAI, Gemini Live, ElevenLabs)
+Streams audio to a provider WebSocket (OpenAI, Gemini Live, ElevenLabs, Phonon)
 during capture via the streaming callback; transcribe() then commits the
 buffered audio and waits for the final transcript.
 """
@@ -22,7 +22,7 @@ except ImportError:
 np = require_package('numpy')
 
 try:
-    from ..backend_utils import normalize_backend
+    from ..backend_utils import normalize_backend, is_valid_websocket_url
     from ..credential_manager import get_credential
     from ..openai_realtime_models import (
         is_continuous,
@@ -31,7 +31,7 @@ try:
     )
     from ..provider_registry import get_provider
 except ImportError:
-    from backend_utils import normalize_backend
+    from backend_utils import normalize_backend, is_valid_websocket_url
     from credential_manager import get_credential
     from openai_realtime_models import (
         is_continuous,
@@ -106,12 +106,64 @@ class RealtimeWsBackend(TranscriptionBackend):
 
         # Get API key from credential manager
         api_key = get_credential(provider_id)
-        if not api_key:
+        provider = get_provider(provider_id) or {}
+        if not api_key and provider.get('api_key_required', True):
             log(f'ERROR: Provider {provider_id} configured but API key not found in credential store')
             return False
 
         # Select appropriate client based on provider
-        if provider_id == 'google':
+        if provider_id == 'phonon':
+            if self.config.get_setting('recording_mode', 'toggle') in ('continuous', 'long_form'):
+                log('ERROR: Phonon realtime does not support continuous or long_form recording; use toggle/auto or REST')
+                return False
+            try:
+                from ..phonon_realtime_client import PhononRealtimeClient
+            except ImportError:
+                from phonon_realtime_client import PhononRealtimeClient
+
+            websocket_url = self.config.get_setting('websocket_url')
+            if model_id != 'phonon-2':
+                log('ERROR: Phonon supports websocket_model="phonon-2"')
+                return False
+            if not is_valid_websocket_url(websocket_url):
+                log('ERROR: Phonon requires a valid ws:// or wss:// websocket_url with a host')
+                return False
+            if self.config.get_setting('realtime_mode', 'transcribe') != 'transcribe':
+                log('ERROR: Phonon supports only realtime_mode="transcribe"')
+                return False
+
+            self._realtime_client = PhononRealtimeClient()
+            try:
+                self._realtime_client.update_language(self.config.get_setting('language'))
+            except ValueError as e:
+                log(f'ERROR: {e}')
+                self._realtime_client = None
+                return False
+            self._realtime_client.set_max_buffer_seconds(
+                self.config.get_setting('realtime_buffer_max_seconds', 5)
+            )
+            self.apply_partial_callback(self._realtime_partial_callback)
+            self._realtime_connect_params = {
+                'websocket_url': websocket_url,
+                'api_key': api_key,
+                'model_id': model_id,
+                'instructions': None,
+            }
+            if not self._realtime_client.connect(websocket_url, api_key, model_id):
+                self.close()
+                log('ERROR: Failed to connect to Phonon WebSocket')
+                return False
+
+            def _send_direct(audio_chunk: np.ndarray):
+                try:
+                    self._realtime_client.append_audio(audio_chunk)
+                except Exception as e:
+                    log(f'[REALTIME] Streaming error: {e}')
+
+            _send_direct.set_input_sample_rate = self._realtime_client.set_input_sample_rate
+            self._realtime_streaming_callback = _send_direct
+
+        elif provider_id == 'google':
             # Use Gemini Live API client
             try:
                 from ..gemini_realtime_client import GeminiRealtimeClient
@@ -390,7 +442,7 @@ class RealtimeWsBackend(TranscriptionBackend):
             log('[REALTIME] Client not initialized')
             return ""
         
-        if not self._realtime_client.connected:
+        if not self._realtime_client.connected and not getattr(self._realtime_client, 'commit_after_disconnect', False):
             log('[REALTIME] Client not connected')
             return ""
         
@@ -438,7 +490,17 @@ class RealtimeWsBackend(TranscriptionBackend):
             return None
 
         # Clear server buffer before starting new recording
-        self._realtime_client.clear_audio_buffer()
+        try:
+            self._realtime_client.clear_audio_buffer()
+        except RuntimeError:
+            # An idle socket may close between readiness and buffer setup.
+            # No capture has started yet, so one fresh attempt is safe.
+            if self.config.get_setting('websocket_provider') != 'phonon' or not self._reconnect_realtime_client():
+                return None
+            try:
+                self._realtime_client.clear_audio_buffer()
+            except RuntimeError:
+                return None
         self._clear_realtime_partial_preview()
         return self._realtime_streaming_callback
 
@@ -488,6 +550,9 @@ class RealtimeWsBackend(TranscriptionBackend):
         if provider_id == 'openai':
             return is_continuous(model_id)
 
+        if provider_id == 'phonon':
+            return True
+
         return False
 
     def _clear_realtime_partial_preview(self) -> None:
@@ -512,7 +577,11 @@ class RealtimeWsBackend(TranscriptionBackend):
         or suspend, and nothing outside the resume path rebuilds it.
         """
         if self._realtime_client:
-            if self._realtime_client.connected:
+            if getattr(self._realtime_client, 'awaiting_completion', False):
+                log('[REALTIME] Previous recording is still awaiting completion')
+                self._last_connect_failure = 'processing'
+                return False
+            if self._realtime_client.connected and not getattr(self._realtime_client, 'requires_new_connection', False):
                 self._last_connect_failure = None
                 return True
             return self._reconnect_realtime_client()
@@ -576,7 +645,8 @@ class RealtimeWsBackend(TranscriptionBackend):
         model_id = params.get('model_id')
         instructions = params.get('instructions')
 
-        if not (websocket_url and api_key and model_id):
+        provider = get_provider(self.config.get_setting('websocket_provider')) or {}
+        if not (websocket_url and model_id) or (not api_key and provider.get('api_key_required', True)):
             log('[REALTIME] Missing connection parameters; cannot reconnect')
             self._last_connect_failure = 'failed'
             return False
@@ -608,10 +678,13 @@ class RealtimeWsBackend(TranscriptionBackend):
             return False
 
     def discard_audio(self) -> None:
-        """Drop buffered audio client- and server-side; keep the connection alive."""
+        """Discard audio; providers without a buffer-clear protocol close instead."""
         if self._realtime_client:
             try:
-                self._realtime_client.clear_audio_buffer()
+                discard = getattr(self._realtime_client, 'discard_audio', None)
+                if discard is None:
+                    discard = self._realtime_client.clear_audio_buffer
+                discard()
                 self._clear_realtime_partial_preview()
             except Exception as e:
                 log(f'[REALTIME] Failed to discard audio: {e}')

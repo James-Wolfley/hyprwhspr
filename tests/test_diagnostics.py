@@ -145,6 +145,24 @@ class ValidationTests(unittest.TestCase):
         self.assertIn('config.realtime_model', {f['check_id'] for f in findings})
         self.assertNotIn(SECRET, json.dumps(findings))
 
+    def test_phonon_continuous_recording_is_rejected(self):
+        _, findings, _ = self.validate({'transcription_backend': 'realtime-ws',
+            'websocket_provider': 'phonon', 'websocket_model': 'phonon-2',
+            'websocket_url': 'ws://asr.example.test/stream', 'recording_mode': 'continuous'})
+        self.assertIn('config.realtime_continuous', {f['check_id'] for f in findings})
+
+    def test_phonon_requires_websocket_url_and_streaming_recording_mode(self):
+        for url in ('', 'https://asr.example.test/stream', 'ws://', 'wss://asr.example.test/stream',
+                    'WSS://asr.example.test/stream', '\x00wss://asr.example.test/stream'):
+            for mode in ('toggle', 'long_form'):
+                with self.subTest(url=url, mode=mode):
+                    _, findings, _ = self.validate({'transcription_backend': 'realtime-ws',
+                        'websocket_provider': 'phonon', 'websocket_model': 'phonon-2',
+                        'websocket_url': url, 'recording_mode': mode})
+                    ids = {f['check_id'] for f in findings}
+                    self.assertEqual('config.realtime_url' in ids, url != 'wss://asr.example.test/stream')
+                    self.assertEqual('config.realtime_recording_mode' in ids, mode == 'long_form')
+
 
 class SnapshotTests(unittest.TestCase):
     def app(self):

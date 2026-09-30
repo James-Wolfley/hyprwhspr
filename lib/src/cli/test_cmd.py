@@ -15,14 +15,16 @@ except ImportError:
     from backend_installer import PYWHISPERCPP_MODELS_DIR
 
 try:
-    from ..backend_utils import normalize_backend
+    from ..backend_utils import normalize_backend, is_valid_websocket_url
 except ImportError:
-    from backend_utils import normalize_backend
+    from backend_utils import normalize_backend, is_valid_websocket_url
 
 try:
     from ..credential_manager import get_credential
+    from ..provider_registry import get_provider
 except ImportError:
     from credential_manager import get_credential
+    from provider_registry import get_provider
 
 try:
     from ..output_control import log_info, log_success, log_warning, log_error
@@ -130,6 +132,9 @@ def test_command(live: bool = False, mic_only: bool = False):
                 if api_key:
                     log_success(f"Credentials configured (provider: {provider_id})")
                     backend_ready = True
+                elif not (get_provider(provider_id) or {}).get('api_key_required', True):
+                    log_success(f'Provider: {provider_id}, no API key required')
+                    backend_ready = True
                 else:
                     log_error(f"API key not found for provider: {provider_id}")
                     all_passed = False
@@ -155,12 +160,25 @@ def test_command(live: bool = False, mic_only: bool = False):
         elif not model_id:
             log_error("WebSocket model not configured")
             all_passed = False
+        elif provider_id == 'phonon' and not is_valid_websocket_url(config.get_setting('websocket_url')):
+            log_error('Phonon requires a valid ws:// or wss:// WebSocket URL with a host')
+            all_passed = False
+        elif provider_id == 'phonon' and config.get_setting('recording_mode', 'toggle') in ('continuous', 'long_form'):
+            log_error('Phonon realtime does not support continuous or long_form recording; use REST instead')
+            all_passed = False
         else:
             api_key = get_credential(provider_id)
             if api_key:
                 log_success(f"Provider: {provider_id}, Model: {model_id}")
                 log_success("Credentials configured")
                 backend_ready = True
+            elif not (get_provider(provider_id) or {}).get('api_key_required', True):
+                if not config.get_setting('websocket_url'):
+                    log_error('WebSocket URL not configured')
+                    all_passed = False
+                else:
+                    log_success(f'Provider: {provider_id}, Model: {model_id}, no API key required')
+                    backend_ready = True
             else:
                 log_error(f"API key not found for provider: {provider_id}")
                 all_passed = False

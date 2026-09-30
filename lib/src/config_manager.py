@@ -140,14 +140,14 @@ def build_default_config():
         'qwen3_asr_device': 'auto',           # 'auto' | 'cpu' | 'vulkan' (no Linux CUDA build upstream)
         'qwen3_asr_timeout': 180,              # Sidecar request timeout (1-600 seconds)
         'rest_endpoint_url': None,         # Full HTTP or HTTPS URL for remote transcription
-        'rest_api_provider': None,          # Provider identifier for credential lookup (e.g., 'openai', 'groq', 'custom')
+        'rest_api_provider': None,          # Provider identifier for credentials/capabilities (e.g., 'openai', 'phonon', 'custom')
         'rest_api_key': None,              # DEPRECATED: Optional API key for authentication (kept for backward compatibility)
         'rest_headers': {},                # Additional HTTP headers for remote transcription
         'rest_body': {},                   # Additional body fields for remote transcription
         'rest_timeout': 30,                # Request timeout in seconds
         'rest_audio_format': 'wav',        # Audio format for remote transcription
         # WebSocket realtime backend settings
-        'websocket_provider': None,        # Provider identifier for credential lookup (e.g., 'openai', 'google', 'elevenlabs')
+        'websocket_provider': None,        # Protocol/credential provider (e.g., 'openai', 'google', 'elevenlabs', 'phonon')
         'websocket_model': None,           # Model identifier (e.g., 'gpt-transcribe')
         'websocket_url': None,             # Optional: explicit WebSocket URL (auto-derived if None)
         'realtime_timeout': 30,            # Completion timeout (seconds)

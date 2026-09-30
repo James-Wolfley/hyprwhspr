@@ -58,6 +58,17 @@ class EarlyPlaybackTests(unittest.TestCase):
                     self.assertEqual(order, ['sound', 'suppress', 'stability'])
                     self.assertEqual(app.playback_suppressor.restore.called, not stable)
                     self.assertEqual(app.is_recording, stable)
+                    self.assertEqual(app.whisper_manager.discard_realtime_audio.called, not stable)
+
+    def test_failed_initial_verification_discards_realtime_stream(self):
+        app = self.app()
+        app.audio_capture.frames_since_start = 0
+        with mock.patch('time.monotonic', side_effect=range(0, 20, 2)):
+            app._start_recording()
+        app.audio_capture.stop_recording.assert_called_once_with()
+        app.whisper_manager.discard_realtime_audio.assert_called_once_with()
+        self.assertFalse(app.is_recording)
+        self.assertFalse(app._recording_starting)
 
     def test_cancel_during_suppression_restores_and_old_owner_cannot_restore_new(self):
         for mode in ('duck', 'pause'):

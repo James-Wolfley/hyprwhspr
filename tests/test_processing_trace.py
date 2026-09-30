@@ -64,6 +64,7 @@ class ProcessingTraceTests(unittest.TestCase):
             ({"transcription_backend": "realtime-ws", "websocket_provider": "openai", "websocket_model": "gpt-4o-mini-transcribe"}, "server_vad"),
             ({"transcription_backend": "realtime-ws", "websocket_provider": "google"}, "server_vad"),
             ({"transcription_backend": "realtime-ws", "websocket_provider": "elevenlabs"}, "provider_managed"),
+            ({"transcription_backend": "realtime-ws", "websocket_provider": "phonon", "websocket_model": "phonon-2"}, "manual_commit"),
             ({"transcription_backend": "rest-api"}, "provider_managed"),
         ]
         for settings, expected in cases:

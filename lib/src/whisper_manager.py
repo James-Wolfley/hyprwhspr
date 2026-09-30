@@ -202,7 +202,7 @@ class WhisperManager:
             backend.update_language(language)
 
     def discard_realtime_audio(self) -> None:
-        """Discard buffered realtime audio without closing the connection (no-op otherwise)."""
+        """Discard realtime audio; providers without buffer clearing close instead."""
         backend = self._active_realtime_backend()
         if backend:
             backend.discard_audio()

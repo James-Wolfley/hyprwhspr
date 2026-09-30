@@ -664,6 +664,35 @@ Leave `language` unset to detect it. Set an ISO code to hold it steady.
 
 Use any ASR backend via HTTP API (local or cloud).
 
+#### Phonon, self-hosted
+
+Select Phonon and Phonon-2 in `hyprwhspr setup`, then enter your deployment's
+full endpoint URL. Both REST and realtime setup offer this provider. No
+deployment address is built in.
+
+For record-then-transcribe:
+
+```json
+{
+    "transcription_backend": "rest-api",
+    "rest_api_provider": "phonon",
+    "rest_endpoint_url": "https://asr.example.com/v1/audio/transcriptions",
+    "rest_body": {"model": "phonon-2", "response_format": "json"}
+}
+```
+
+The provider resamples mono audio to 16 kHz and uploads WAV. Phonon is
+English-only. Leave `language` unset or use `"en"`; other languages fail
+explicitly. Configured prompt hints are not sent. Translation, diarization,
+and timestamps are not supported. Uploads over 32 MiB fail locally. A busy
+upload queue returns an HTTP error without automatic retries.
+
+Authentication is optional. Setup can save a reverse-proxy bearer token in
+the existing credential manager under `phonon`. Both backends send it as
+`Authorization: Bearer <token>`, in the HTTP request or WebSocket handshake.
+Without a saved token neither adds an Authorization header. Use HTTPS/WSS
+for remote deployments. Do not put tokens in URLs or configuration examples.
+
 #### Cohere 🇨🇦
 
 [Sign up at dashboard.cohere.com](https://dashboard.cohere.com/welcome/register) — Canadian-hosted, same as local Apache 2.0 model.
@@ -725,9 +754,41 @@ Persistent WebSocket streaming. `realtime_mode` selects `transcribe` (speech-to-
 | OpenAI | Yes | Yes, on a `gpt-realtime-*` model |
 | Google Gemini | Yes | Yes |
 | ElevenLabs | Yes | No — hyprwhspr ignores `realtime_mode` |
+| Phonon | Yes, English only | No |
 | Custom | Yes | Yes |
 
 Custom endpoints speak the OpenAI Realtime protocol. Set `websocket_provider: "custom"` and `websocket_url`.
+
+#### Phonon realtime
+
+Use the dedicated provider, not the OpenAI-compatible `custom` provider:
+
+```json
+{
+    "transcription_backend": "realtime-ws",
+    "websocket_provider": "phonon",
+    "websocket_model": "phonon-2",
+    "websocket_url": "wss://asr.example.com/v1/audio/stream",
+    "realtime_mode": "transcribe"
+}
+```
+
+Audio is raw mono 16 kHz signed little-endian PCM. Partial transcripts replace
+the live OSD preview. Numbered final segments appear once; only the complete
+`done` transcript is returned for insertion when you stop. Waveform previews
+work with the OSD enabled. Pill previews also require
+`mic_osd_pill_transcript_enabled: true`.
+
+Each recording uses a fresh connection after completion or cancellation.
+Phonon realtime supports toggle, push-to-talk, and auto recording, but not
+continuous paste-on-pause or long-form mode. Use the REST backend for either.
+The realtime backend rejects these modes rather than dropping or omitting audio.
+Phonon accepts one live stream and closes idle streams after 90 seconds.
+Busy rejection, connection loss, audio queue overflow, and completion timeout
+fail the recording without inserting provisional or incomplete text. The
+client reconnects before the next recording, never by replaying audio in the
+middle of a recording. REST uploads and streaming share the server's GPU.
+Increase `realtime_timeout` if completion regularly exceeds its 30-second default.
 
 #### OpenAI Realtime
 

@@ -101,6 +101,10 @@ class RecordingMixin:
             if self._recording_starting:
                 # A stopped start is still releasing capture; refuse until it settles.
                 blocked = 'starting'
+            elif (self.config.get_setting('websocket_provider') == 'phonon'
+                  and normalize_backend(self.config.get_setting('transcription_backend')) == 'realtime-ws'
+                  and (self.is_processing or self._recording_finalizing.is_set())):
+                blocked = 'processing'
             elif self._model_initializing:
                 blocked = 'initializing'
             elif self._backend_init_failed:
@@ -141,6 +145,11 @@ class RecordingMixin:
         if blocked == 'starting':
             self._notify_user("hyprwhspr", "Still stopping — try again", urgency="normal")
             log("[CONTROL] Recording blocked: previous start still settling")
+            return
+
+        if blocked == 'processing':
+            self._notify_user("hyprwhspr", "Still transcribing, please wait", urgency="normal")
+            log("[CONTROL] Recording blocked: previous transcription still processing")
             return
 
         if blocked == 'initializing':
@@ -272,6 +281,7 @@ class RecordingMixin:
                 if not verified:
                     # Stream broken - stop recording (thread will clean up stream)
                     self.audio_capture.stop_recording()
+                    self.whisper_manager.discard_realtime_audio()
 
                     # Reset state
                     with self._recording_lock:
@@ -309,6 +319,7 @@ class RecordingMixin:
                 if not stable:
                     # Stream stopped working shortly after starting
                     self.audio_capture.stop_recording()
+                    self.whisper_manager.discard_realtime_audio()
                     with self._recording_lock:
                         self.is_recording = False
                     self._write_recording_status(False)
@@ -433,19 +444,25 @@ class RecordingMixin:
                 return
             session = self._recording_session
             self.is_recording = False
+            self._recording_finalizing.set()
             self._current_language_override = None  # Clear language override on error
             self._ptt_reset()
 
         log("[MUTE] Recording cancelled - microphone returned silence for 1 second")
 
-        self._cleanup_recording_state(session)
         try:
+            self._cleanup_recording_state(session)
             self._wait_for_start_settled()
             self.audio_capture.stop_recording()
             self.audio_manager.play_error_sound()
             # Note: No desktop notification - tray will detect muted state via audio level monitoring
         except Exception as e:
             log(f"[ERROR] Error canceling recording: {e}")
+        finally:
+            try:
+                self.whisper_manager.discard_realtime_audio()
+            finally:
+                self._recording_finalizing.clear()
 
     def _cancel_recording(self):
         """Cancel recording and discard audio without transcribing or injecting text"""
@@ -454,24 +471,27 @@ class RecordingMixin:
                 return
             session = self._recording_session
             self.is_recording = False
+            self._recording_finalizing.set()
             self._current_language_override = None
             self._ptt_reset()
 
         log("Recording cancelled (discarded)")
 
-        self._cleanup_recording_state(session)
         try:
+            self._cleanup_recording_state(session)
             # Stop capture and discard the audio data
             self._wait_for_start_settled()
             self.audio_capture.stop_recording()
 
-            # Discard buffered realtime audio but keep the WebSocket alive so the
-            # next recording starts without paying a fresh handshake
-            self.whisper_manager.discard_realtime_audio()
-
             self.audio_manager.play_error_sound()
         except Exception as e:
             log(f"[ERROR] Error cancelling recording: {e}")
+        finally:
+            try:
+                # Buffer-clearing providers keep their socket; Phonon closes it.
+                self.whisper_manager.discard_realtime_audio()
+            finally:
+                self._recording_finalizing.clear()
 
     _DEBUG_RECORDINGS_KEEP = 3
 
@@ -534,6 +554,7 @@ class RecordingMixin:
 
             # Check for zero-volume or broken stream
             if audio_data is None:
+                self.whisper_manager.discard_realtime_audio()
                 # Stream was broken - check if we got any callbacks
                 self.audio_manager.play_error_sound()
                 with self.audio_capture.lock:
@@ -548,6 +569,7 @@ class RecordingMixin:
                 self._show_result_and_hide(False)
                 self._notify_capture("", final=True)
             elif self._is_zero_volume(audio_data):
+                self.whisper_manager.discard_realtime_audio()
                 # Audio data exists but is all zeros - mic not producing sound
                 # Play error sound and notify user (may be intentional muting, but still inform)
                 self.audio_manager.play_error_sound()

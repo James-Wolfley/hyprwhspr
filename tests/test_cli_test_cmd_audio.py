@@ -45,6 +45,31 @@ class WorkingAudioCapture(MonitorAudioCapture):
 
 
 class TestCommandAudioDiagnosticsTests(unittest.TestCase):
+    def test_phonon_invalid_endpoint_or_mode_skips_transcription_even_with_token(self):
+        for token in (None, 'test-token'):
+            for settings in ({'websocket_url': ''},
+                             {'websocket_url': 'https://asr.example.test/stream'},
+                             {'websocket_url': 'ws://'},
+                             {'websocket_url': 'WSS://asr.example.test/stream'},
+                             {'websocket_url': '\x00wss://asr.example.test/stream'},
+                             {'recording_mode': 'continuous'},
+                             {'recording_mode': 'long_form'}):
+                with self.subTest(token=bool(token), settings=settings):
+                    values = dict(transcription_backend='realtime-ws', websocket_provider='phonon',
+                                  websocket_model='phonon-2', websocket_url='wss://asr.example.test/stream')
+                    values.update(settings)
+                    config = mock.Mock()
+                    config.get_setting.side_effect = lambda key, default=None: values.get(key, default)
+                    with (
+                        mock.patch.object(test_cmd, 'ConfigManager', return_value=config),
+                        mock.patch.dict(sys.modules, {'audio_capture': types.SimpleNamespace(AudioCapture=WorkingAudioCapture)}),
+                        mock.patch.object(test_cmd, 'get_credential', return_value=token),
+                        mock.patch('wave.open', side_effect=RuntimeError('No file access in regression test')),
+                        mock.patch.object(test_cmd, 'log_warning') as warning,
+                    ):
+                        self.assertFalse(test_cmd.test_command())
+                    self.assertIn('Skipping transcription test', ' '.join(str(c.args[0]) for c in warning.call_args_list))
+
     def test_mic_only_reports_monitor_selection_error(self):
         audio_module = types.SimpleNamespace(AudioCapture=MonitorAudioCapture)
 

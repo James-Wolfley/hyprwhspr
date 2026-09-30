@@ -32,10 +32,10 @@ except ImportError:
 
 try:
     from ..backend_utils import (BACKEND_DISPLAY_NAMES, BACKEND_SUMMARIES,
-                                 LOCAL_INSTALL_BACKENDS, normalize_backend)
+                                 LOCAL_INSTALL_BACKENDS, normalize_backend, is_valid_websocket_url)
 except ImportError:
     from backend_utils import (BACKEND_DISPLAY_NAMES, BACKEND_SUMMARIES,
-                               LOCAL_INSTALL_BACKENDS, normalize_backend)
+                               LOCAL_INSTALL_BACKENDS, normalize_backend, is_valid_websocket_url)
 
 try:
     from ..backend_installer import install_backend, VENV_DIR
@@ -54,9 +54,9 @@ except ImportError:
     )
 
 try:
-    from ..credential_manager import save_credential, get_credential, mask_api_key
+    from ..credential_manager import save_credential, get_credential, delete_credential, mask_api_key
 except ImportError:
-    from credential_manager import save_credential, get_credential, mask_api_key
+    from credential_manager import save_credential, get_credential, delete_credential, mask_api_key
 
 try:
     from ..output_control import (
@@ -421,6 +421,34 @@ def _prompt_faster_whisper_model_selection(current_model: Optional[str] = None) 
             continue
 
 
+def _prompt_deployment(provider_id, provider, realtime=False):
+    """Collect a self-hosted endpoint and optional proxy credential."""
+    label = 'WebSocket URL' if realtime else 'Endpoint URL'
+    schemes = ('ws://', 'wss://') if realtime else ('http://', 'https://')
+    endpoint_url = Prompt.ask(label, default='')
+    if realtime and not is_valid_websocket_url(endpoint_url):
+        log_error('WebSocket URL must use ws:// or wss:// and include a valid host')
+        return None
+    if not endpoint_url.startswith(schemes):
+        log_error(f"{label} must start with {' or '.join(schemes)}")
+        return None
+    api_key = None
+    if Confirm.ask('Does your reverse proxy require a bearer token?', default=False):
+        api_key = getpass.getpass(f"Enter {provider['api_key_description']}: ")
+        if not api_key:
+            log_error('Bearer token cannot be empty')
+            return None
+        if not save_credential(provider_id, api_key):
+            log_error('Failed to save bearer token')
+            return None
+    elif get_credential(provider_id):
+        if not delete_credential(provider_id):
+            log_error('Failed to remove previous bearer token')
+            return None
+    endpoint_key = 'websocket_url' if realtime else 'endpoint'
+    return api_key, {endpoint_key: endpoint_url}
+
+
 def _prompt_realtime_provider_model_selection():
     """
     Prompt user for realtime provider and model selection in one flat list.
@@ -437,9 +465,6 @@ def _prompt_realtime_provider_model_selection():
 
     realtime_options = []
     for provider_id, provider in PROVIDERS.items():
-        if not provider.get('websocket_endpoint'):
-            continue
-
         for model_id, model_data in get_models_for_backend(provider_id, 'realtime-ws').items():
             realtime_options.append((provider_id, provider, model_id, model_data))
             print(
@@ -497,6 +522,13 @@ def _prompt_realtime_provider_model_selection():
             provider_id, provider, model_id, model_data = realtime_options[choice_num - 1]
             print(f"\n✓ Selected: {provider['name']}: {model_data['name']}")
 
+            if provider.get('requires_endpoint'):
+                deployment = _prompt_deployment(provider_id, provider, realtime=True)
+                if deployment is None:
+                    continue
+                api_key, custom_config = deployment
+                return provider_id, model_id, api_key, custom_config
+
             existing_key = get_credential(provider_id)
             if existing_key:
                 masked = mask_api_key(existing_key)
@@ -544,20 +576,16 @@ def _prompt_remote_provider_selection(filter_realtime: bool = False):
     print("\n" + "="*60)
     print("Remote Provider Selection")
     print("="*60)
-    print("\nChoose a cloud transcription provider:")
+    print("\nChoose a remote transcription provider:")
     print()
     
     # Build provider list
     all_providers_list = list_providers()
     
-    # Filter providers if this is for realtime-ws (only show providers with websocket_endpoint)
+    # Offer models by backend capability, including configurable self-hosted providers.
     if filter_realtime:
         providers_list = []
         for provider_id, provider_name, _model_ids in all_providers_list:
-            provider = get_provider(provider_id)
-            if not (provider and provider.get('websocket_endpoint')):
-                continue
-
             # Only show providers that have realtime-capable models
             realtime_model_ids = list(get_models_for_backend(provider_id, 'realtime-ws'))
             if realtime_model_ids:
@@ -625,6 +653,13 @@ def _prompt_remote_provider_selection(filter_realtime: bool = False):
                 selected_model_id, selected_model_data = model_list[int(model_choice) - 1]
                 
                 print(f"\n✓ Selected: {selected_model_data['name']}")
+
+                if provider.get('requires_endpoint'):
+                    deployment = _prompt_deployment(provider_id, provider, realtime=filter_realtime)
+                    if deployment is None:
+                        continue
+                    api_key, custom_config = deployment
+                    return provider_id, selected_model_id, api_key, custom_config
                 
                 # Check for existing credential
                 existing_key = get_credential(provider_id)
@@ -768,6 +803,8 @@ def _generate_remote_config(provider_id: str, model_id: Optional[str], api_key: 
         # omit, or a custom URL from an earlier setup overrides the provider's
         # own endpoint.
         config['websocket_url'] = (custom_config or {}).get('websocket_url')
+        if provider_id == 'phonon':
+            config['realtime_mode'] = 'transcribe'
         return config
     
     config = {
@@ -777,7 +814,7 @@ def _generate_remote_config(provider_id: str, model_id: Optional[str], api_key: 
         'rest_api_key': None,
     }
 
-    if custom_config:
+    if custom_config and provider_id == 'custom':
         # Custom backend
         config['rest_endpoint_url'] = custom_config['endpoint']
         # Store provider identifier instead of API key
@@ -793,7 +830,7 @@ def _generate_remote_config(provider_id: str, model_id: Optional[str], api_key: 
         if not model_config:
             raise ValueError(f"Invalid provider/model combination: {provider_id}/{model_id}")
         
-        config['rest_endpoint_url'] = model_config['endpoint']
+        config['rest_endpoint_url'] = (custom_config or {}).get('endpoint', model_config['endpoint'])
         # Store provider identifier instead of API key
         # API key is already saved securely via credential_manager
         config['rest_api_provider'] = provider_id
@@ -1302,7 +1339,7 @@ def setup_command(python_path: Optional[str] = None):
                 if api_key:
                     masked = mask_api_key(api_key)
                     print(f"API Key: {masked}")
-                elif provider_id != 'custom':
+                elif provider_id != 'custom' and (get_provider(provider_id) or {}).get('api_key_required', True):
                     print(f"API Key: not found in credential store for provider {provider_id}")
         else:
             print(f"Endpoint: {remote_config.get('rest_endpoint_url', 'N/A')}")
@@ -1316,8 +1353,10 @@ def setup_command(python_path: Optional[str] = None):
                 if api_key:
                     masked = mask_api_key(api_key)
                     print(f"Provider: {provider_id} (API Key: {masked})")
-                else:
+                elif (get_provider(provider_id) or {}).get('api_key_required', True):
                     print(f"Provider: {provider_id} (API Key: not found in credential store)")
+                else:
+                    print(f"Provider: {provider_id} (no API key required)")
             # Backward compatibility: check for old rest_api_key
             elif remote_config.get('rest_api_key'):
                 api_key = remote_config.get('rest_api_key')

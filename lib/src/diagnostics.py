@@ -12,7 +12,7 @@ import time
 
 from config_manager import build_default_config, normalize_legacy_config, expand_env, _ENV_PATTERN
 from paths import CONFIG_FILE, DATA_DIR, SOCKET_FILE
-from backend_utils import normalize_backend
+from backend_utils import normalize_backend, is_valid_websocket_url
 from dependency_plan import PLAN_SPECS, plan_key
 from provider_registry import get_models_for_backend, get_realtime_capabilities, get_realtime_mode
 from session_environment import classify_display_environment
@@ -119,6 +119,11 @@ def validate_config(path=None):
                 findings.append(finding('config.realtime_continuous', 'error', 'This model does not support continuous recording.'))
         elif not config['websocket_url']:
             findings.append(finding('config.realtime_url', 'error', 'Custom realtime provider requires a WebSocket URL.'))
+        if provider == 'phonon':
+            if not is_valid_websocket_url(config['websocket_url']):
+                findings.append(finding('config.realtime_url', 'error', 'Phonon requires a valid ws:// or wss:// WebSocket URL with a host.'))
+            if config['recording_mode'] == 'long_form':
+                findings.append(finding('config.realtime_recording_mode', 'error', 'Phonon realtime does not support long-form recording. Use REST instead.'))
     if not findings:
         findings.append(finding('config.valid', 'info', 'Configuration checks passed.'))
     return config, findings, False

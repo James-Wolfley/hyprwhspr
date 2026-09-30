@@ -343,7 +343,7 @@
     "rest_api_provider": {
       "type": ["string", "null"],
       "default": null,
-      "description": "Provider identifier for credential lookup (e.g., 'openai', 'groq', 'custom')"
+      "description": "Provider identifier for credentials and capabilities (e.g., 'openai', 'phonon', 'custom'); Phonon credentials are optional"
     },
     "rest_api_key": {
       "type": ["string", "null"],
@@ -377,7 +377,7 @@
     "websocket_provider": {
       "type": ["string", "null"],
       "default": null,
-      "description": "Provider identifier for WebSocket credential lookup (e.g., 'openai', 'google', 'elevenlabs')"
+      "description": "WebSocket protocol and credential provider (e.g., 'openai', 'google', 'elevenlabs', 'phonon'); Phonon credentials are optional"
     },
     "websocket_model": {
       "type": ["string", "null"],
@@ -387,7 +387,7 @@
     "websocket_url": {
       "type": ["string", "null"],
       "default": null,
-      "description": "Explicit WebSocket URL (auto-derived from provider if null)"
+      "description": "Explicit WebSocket URL (required for Phonon/custom; auto-derived for hosted providers if null)"
     },
     "realtime_timeout": {
       "type": "integer",
@@ -553,7 +553,7 @@
     "mic_osd_pill_transcript_enabled": {
       "type": "boolean",
       "default": false,
-      "description": "Show a live transcript above the pill OSD. Requires a realtime-ws backend that streams partial transcripts (OpenAI, ElevenLabs)."
+      "description": "Show a live transcript above the pill OSD. Requires a realtime-ws backend that streams partial transcripts (OpenAI, ElevenLabs, Phonon)."
     },
     "mic_osd_pill_transcript_word_limit": {
       "type": "integer",
